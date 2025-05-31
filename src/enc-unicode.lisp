@@ -890,3 +890,209 @@ order without a leading byte-order mark."
   :nul-encoding #(0 0))
 
 (define-ucs :ucs-2be 2 :be #x10000)
+
+;; Modified UTF-8
+;; Used by JVM, see https://docs.oracle.com/en/java/javase/24/docs/specs/jni/types.html#modified-utf-8-strings
+
+(define-character-encoding :modified-utf-8
+    "An 8-bit, variable-length character encoding in which
+character code points in the range #x00-#x7f can be encoded in a
+single octet; characters with larger code values can be encoded
+in 2 to 6 bytes.  The null character is encoded using the
+two-byte format, so modified UTF-8 strings never have embedded
+nulls.  A custom two-times-three-byte format is used instead of
+the four-byte format of the standard UTF-8."
+  :aliases '(:mutf-8)
+  :max-units-per-char 6
+  :literal-char-code-limit #x80
+  :bom-encoding #(#xef #xbb #xbf)
+  :default-replacement nil ; #xfffd ??
+  :nul-encoding #(#xc0 #x80))
+
+(define-octet-counter :modified-utf-8 (getter type)
+  `(named-lambda modified-utf-8-octet-counter (seq start end max)
+     (declare (type ,type seq) (fixnum start end max))
+     (loop with noctets fixnum = 0
+           for i fixnum from start below end
+           for code of-type code-point = (,getter seq i) do
+           (let ((new (+ (cond ((= code #x0) 2)
+                               ((< code #x80) 1)
+                               ((< code #x800) 2)
+                               ((< code #x10000) 3)
+                               (t 6))
+                         noctets)))
+             (if (and (plusp max) (> new max))
+                 (loop-finish)
+                 (setq noctets new)))
+           finally (return (values noctets i)))))
+
+(define-code-point-counter :modified-utf-8 (getter type)
+  `(named-lambda modified-utf-8-code-point-counter (seq start end max)
+     (declare (type ,type seq) (fixnum start end max))
+     (loop with nchars fixnum = 0
+           with i fixnum = start
+           while (< i end) do
+           ;; check for invalid continuation bytes
+           (macrolet ((invalid-cb-p (n &optional (lower-bound #x7f) (upper-bound #xc0))
+                        `(and (< (+ i ,n) end)
+                              (not (< ,lower-bound (,',getter seq (+ i ,n)) ,upper-bound)))))
+             ;; wrote this code with LET instead of FOR because CLISP's
+             ;; LOOP doesn't like WHILE clauses before FOR clauses.
+             (let* ((octet (,getter seq i))
+                    (next-i (+ i (cond ((or (< octet #xc0) (invalid-cb-p 1)) 1)
+                                       ((or (< octet #xe0) (invalid-cb-p 2)) 2)
+                                       ((or (not (= octet #xed))
+                                            (invalid-cb-p 1 #x9f #xb0)
+                                            (invalid-cb-p 3 #xec #xee)
+                                            (invalid-cb-p 4 #xaf #xc0)
+                                            (invalid-cb-p 5))
+                                        3)
+                                       (t 6)))))
+               (declare (type ub8 octet) (fixnum next-i))
+               (cond
+                 ((> next-i end)
+                  ;; Should we add restarts to this error, we'll have
+                  ;; to figure out a way to communicate with the
+                  ;; decoder since we probably want to do something
+                  ;; about it right here when we have a chance to
+                  ;; change the count or something.  (Like an
+                  ;; alternative replacement character or perhaps the
+                  ;; existence of this error so that the decoder
+                  ;; doesn't have to check for it on every iteration
+                  ;; like we do.)
+                  ;;
+                  ;; FIXME: The data for this error is not right.
+                  (decoding-error (vector octet) :utf-8 seq i
+                                  nil 'end-of-input-in-character)
+                  (return (values (1+ nchars) end)))
+                 (t
+                  (setq nchars (1+ nchars)
+                        i next-i)
+                  (when (and (plusp max) (= nchars max))
+                    (return (values nchars i)))))))
+           finally (progn
+                     (assert (= i end))
+                     (return (values nchars i))))))
+
+(define-encoder :modified-utf-8 (getter src-type setter dest-type)
+  `(named-lambda modified-utf-8-encoder (src start end dest d-start)
+     (declare (type ,src-type src)
+              (type ,dest-type dest)
+              (fixnum start end d-start))
+     (loop with di fixnum = d-start
+           for i fixnum from start below end
+           for code of-type code-point = (,getter src i) do
+           (macrolet ((set-octet (offset value)
+                        `(,',setter ,value dest (the fixnum (+ di ,offset)))))
+             (cond
+               ;; Null
+               ((= code #x0)
+                (set-octet 0 #xc0)
+                (set-octet 1 #x80)
+                (incf di 2))
+               ;; 1 octet
+               ((< code #x80)
+                (set-octet 0 code)
+                (incf di))
+               ;; 2 octets
+               ((< code #x800)
+                (set-octet 0 (logior #xc0 (f-ash code -6)))
+                (set-octet 1 (logior #x80 (f-logand code #x3f)))
+                (incf di 2))
+               ;; 3 octets
+               ((< code #x10000)
+                (set-octet 0 (logior #xe0 (f-ash code -12)))
+                (set-octet 1 (logior #x80 (f-logand #x3f (f-ash code -6))))
+                (set-octet 2 (logior #x80 (f-logand code #x3f)))
+                (incf di 3))
+               ;; 6 octets
+               (t
+                (decf code #x10000)
+                (set-octet 0 #xed)
+                (set-octet 1 (logior #xa0 (f-logand #x0f (f-ash code -16))))
+                (set-octet 2 (logior #x80 (f-logand #x3f (f-ash code -10))))
+                (set-octet 3 #xed)
+                (set-octet 4 (logior #xb0 (f-logand #x0f (f-ash code -6))))
+                (set-octet 5 (logior #x80 (f-logand #x3f code)))
+                (incf di 6))))
+           finally (return (the fixnum (- di d-start))))))
+
+(define-decoder :modified-utf-8 (getter src-type setter dest-type)
+  `(named-lambda modified-utf-8-decoder (src start end dest d-start)
+     (declare (type ,src-type src)
+              (type ,dest-type dest)
+              (fixnum start end d-start))
+     (let ((u2 0) (u3 0) (u4 0) (u5 0) (u6 0))
+       (declare (type ub8 u2 u3 u4 u5 u6))
+       (loop for di fixnum from d-start
+             for i fixnum from start below end
+             for u1 of-type ub8 = (,getter src i) do
+             ;; Note: CONSUME-OCTET doesn't check if I is being
+             ;; incremented past END.  We're assuming that END has
+             ;; been calculated with the CODE-POINT-POINTER above that
+             ;; checks this.
+             (macrolet
+                 ((consume-octet ()
+                    `(let ((next-i (incf i)))
+                       (if (= next-i end)
+                           ;; FIXME: data for this error is incomplete.
+                           ;; and signalling this error twice
+                           (return-from setter-block
+                             (decoding-error nil :utf-8 src i +repl+
+                                             'end-of-input-in-character))
+                           (,',getter src next-i))))
+                  (handle-error (n &optional (c 'character-decoding-error))
+                    `(decoding-error
+                      (vector ,@(subseq '(u1 u2 u3 u4 u5 u6) 0 n))
+                      :utf-8 src (1+ (- i ,n)) +repl+ ',c))
+                  (handle-error-if-icb (var n &optional (lower-bound #x7f) (upper-bound #xc0))
+                    `(when (not (< ,lower-bound ,var ,upper-bound))
+                       (decf i)
+                       (return-from setter-block
+                         (handle-error ,n invalid-utf8-continuation-byte)))))
+               (,setter
+                (block setter-block
+                  (cond
+                    ((< 0 u1 #x80) u1)  ; 1 octet
+                    ((< u1 #xc0)
+                     (handle-error 1 invalid-utf8-starter-byte))
+                    ((< u1 #xe0)        ; 2 octets
+                     (setq u2 (consume-octet))
+                     (handle-error-if-icb u2 1)
+                     (let ((code (logior (f-ash (f-logand #x1f u1) 6)
+                                         (f-logxor u2 #x80))))
+                       (if (< 0 code #x80) ; overlong
+                           (handle-error 2 overlong-utf8-sequence)
+                           code)))
+                    ((< u1 #xf0)        ; 3 or 6 octets
+                     (setq u2 (consume-octet))
+                     (handle-error-if-icb u2 1)
+                     (setq u3 (consume-octet))
+                     (handle-error-if-icb u3 2)
+
+                     (let ((code (f-logior (f-ash (f-logand u1 #x0f) 12)
+                                           (f-ash (f-logand u2 #x3f) 6)
+                                           (f-logand u3 #x3f))))
+                       (cond ((<= #xd800 code #xdfff) ; 6 octets
+                              (handle-error-if-icb u1 0 #xec #xee)
+                              (handle-error-if-icb u2 1 #x9f #xb0)
+                              (setq u4 (consume-octet))
+                              (handle-error-if-icb u4 3 #xec #xee)
+                              (setq u5 (consume-octet))
+                              (handle-error-if-icb u5 4 #xaf #xc0)
+                              (setq u6 (consume-octet))
+                              (handle-error-if-icb u6 5)
+
+                              (+ #x10000
+                                 (f-logior (f-ash (f-logand u2 #x0f) 16)
+                                           (f-ash (f-logand u3 #x3f) 10)
+                                           (f-ash (f-logand u5 #x0f) 6)
+                                           (f-logand u6 #x3f))))
+                             ((< code #x800) ; overlong (3 octets)
+                              (handle-error 3 overlong-utf8-sequence))
+                             (t         ; 3 octets
+                              code))))
+                    (t
+                     (handle-error 1 invalid-utf8-starter-byte))))
+                dest di))
+             finally (return (the fixnum (- di d-start)))))))
