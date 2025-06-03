@@ -1,0 +1,824 @@
+* Packages
+- =#:babel= (/b/)
+
+  Uses =#:cl=, =#:alexandria=, =#:babel-encodings=
+- =#:babel-encodings= (/be/)
+
+  Uses =#:cl=, =#:alexandria=
+- =#:babel-streams= (/bs/)
+
+  Uses =#:cl=, =#:alexandria=, =#:tgs= (trivial-gray-streams), =#:babel=
+* Character encodings
+- =character-encoding= (/class/ /public:be/)
+
+  Represents the meta-information about an encoding.
+
+  The following is the list of slot readers:
+  - =enc-name= (/public:be/)
+
+    Encoding is named by a keyword.
+  - =enc-aliases= (/public:be/)
+
+    This is a list of aliases for the encoding, each is a keyword.
+  - =enc-documentation= (/internal/) /[ should be public ]/
+
+    Documentatation string for the encoding. (Most of these strings are taken from OpenMCL (?).)
+  - =enc-code-unit-size= (/public:be/)
+
+    Size of a code unit encoding uses. Specified in bits. Usually 8, 16 or 32.
+  - =enc-max-units-per-char= (/public:be/)
+
+    Maximum amount of code units for a single character.
+  - =enc-native-endianness= (/public:be/)
+
+    For 16- and 32-bit units. If =NIL=, it is necessary to swap bytes.
+  - =enc-decode-literal-code-unit-limit= (/public:be/)
+
+    Code units less than this value map to themselves on input.
+  - =enc-encode-literal-code-unit-limit= (/public:be/)
+
+    Code points less than this value map to themselves on output.
+  - =enc-use-bom= (/public:be/)
+
+    Defines whether it is necessary to prepend a byte-order-mark to determine the endianness.
+  - =enc-bom-encoding= (/public:be/)
+
+    How the byte-order-mark should be encoded, specified as a sequence of octets. NIL if cannot be encoded.
+  - =enc-nul-encoding= (/public:be/)
+
+    How NUL should be encoded, specified as sequence of octets.
+  - =enc-default-replacement= (/public:be/)
+
+    Preferred replacement character code point (for invalid code-points or octets).
+  - =ambiguous-encoding-p= (/public:be/)
+
+    Does VALID-STRING -> OCTETS -> NEW-STRING guarantee a valid NEW-STRING?
+
+    When called on a symbol, resolves it into a character-encoding using =get-character-encoding=.
+
+  =:literal-char-code-limit= initarg can be used in the constructor =(make-instance 'character-encoding)= (and
+  in the =define-character-encoding= macro), this sets both =e-l-c-u-l= and =d-l-c-u-l= slots.
+- =*supported-character-encodings*= (/internal/)
+
+  The underlying list of the =list-character-encodings= function.
+- =(list-character-encodings)= (/public/)
+
+  Returns the list of keywords denoting known character encodings. Does *not* include aliases.
+- =*default-character-encoding*= (/public/)
+
+  Determines the default character encoding. =:UTF-8= by default.
+- =*character-encodings*= (/internal/)
+
+  The underlying hash-table of the =get-character-encoding= function.
+- =(get-character-encoding name)= (/public:be/)
+
+  Returns the character encoding denoted by the =name=. Recognizes aliases.
+
+  If =name= is =:default=, returns the encoding named by =*default-character-encoding*=.
+
+  If =name= is already a =character-encoding= object, it is returned unmodified.
+- =(notice-character-encoding encoding)= (/internal/)
+
+  Adds the =encoding= both to the list of supported encodings and to the lookup hash-table.
+- =(define-character-encoding name docstring &body options)= (/macro/ /internal/)
+
+  Creates an encoding with =(make-instance 'character-encoding)=, and registers it with
+  =notice-character-encoding=.
+* Abstract & concrete mappings
+- =getter=, =setter= (/term/)
+
+  A macro name or a function name. Theoretically could be a lambda expression.
+
+  For the code-point sequences:
+
+  : (lambda ([value] sequence index) ...)
+
+  For the octet sequences:
+
+  : (lambda ([value] sequence index &optional (bytes 1) (endianness :ne)) ...)
+  - =bytes= determines the number of bytes in an unsigned integer.
+  - =endianness= is one of the following:
+    - =:ne= for native endianness
+    - =:re= for reverse endianness
+    - =:be= for big endian
+    - =:le= for little endian
+- =coder-factory= (/term/)
+
+  : (lambda (src-getter src-type dest-setter dest-type) ...) => coder-form
+
+  This is a function that returns the source form for a =coder=, instantiated by given sequence types, getters
+  and setters.
+
+  - =src-getter= is the source sequence getter.
+  - =src-type= is the type of the source sequence.
+  - =(dest-setter value seq index)= the destination sequence setter.
+  - =dest-type= is the type of the destination sequence.
+- =coder= (/term/)
+
+  : (lambda (src src-start src-end dest dest-start) ...) => count
+
+  This is a function that encodes or decodes a part of the source sequence denoted by =[src-start; src-end)=,
+  and writes the result into the destination sequence starting from =dest-start=. Returns the number of
+  elements written to the destination sequence.
+
+  - =src= is the source/input sequence.
+  - =src-start=, =src-end= denotes the index range of the =src= that needs to be converted.
+  - =dest= is the destination/output sequence.
+  - =dest-start= is the index starting from which you need to write into the output sequence.
+- =counter-factory= (/term/)
+
+  : (lambda (getter type) ...) => counter-form
+
+  This is a function that returns the source form for a =counter=, instantiated by given sequence type and
+  sequence getter.
+
+  - =getter= the source sequence getter.
+  - =type= is the type of the source sequence.
+- =counter= (/term/)
+
+  :  (lambda (src start end max) ...) => count, new-end
+
+  Returns the number of elements (no more than =max= when supplied) that would be written into the destination
+  sequence by the corresponding =coder=; and the new =end= index into the source sequence that will ensure
+  that no more than =max= elements are produced. If =max= is zero or negative, it is disregarded.
+
+  - =src= is the source/input sequence.
+  - =start=, =end= denotes the index range of the =src= that needs to be converted.
+  - =max= denotes the maximum number of elements to be produced. A non-positive number denotes infinity.
+
+- =(make-fixed-width-counter getter type &optional unit-size-in-bits)= (/internal/)
+
+  The default =counter-factory=. Works for unibyte encodings.
+
+  =unit-size-in-bits= can be set to =enc-code-unit-size= of a fixed-width encoding to generate the encoder
+  =counter=. The decoder =counter= must be defined separately.
+- =make-dummy-coder= (/internal/)
+
+  The default =coder-factory=. The instantiated coder always signals an error.
+- =abstract-mapping= (/class/ /internal/)
+
+  Groups the two =coder-= and two =counter-= factories of a given encoding.
+
+  The following is the list of slot accessors:
+  - =encoder-factory= (/internal/) The encoder =coder-factory=.
+  - =decoder-factory= (/internal/) The decoder =coder-factory=.
+  - =octet-counter-factory= (/internal/) The encoder =counter-factory=.
+  - =code-point-counter-factory= (/internal/) The decoder =counter-factory=.
+- =concrete-mapping= (/class/ /internal/)
+
+  Groups the two coders and two counters of a given encoding instantiated by source and destination sequence
+  types, getters and setters.
+
+  The following is the list of slot accessors:
+  - =encoder= (/public:be/) The encoder =coder=.
+  - =decoder= (/public:be/) The decoder =coder=.
+  - =octet-counter= (/public:be/) The encoder =counter=.
+  - =code-point-counter= (/public:be/) The decoder =counter=.
+- =*abstract-mappings*= (/internal/)
+
+  The underlying hash-table of the =get-abstract-mapping= function.
+- =(get-abstract-mapping encoding)= (/accessor/ /internal/)
+
+  Returns the =abstract-mapping= corresponding to the =encoding=.
+
+  =encoding= must be the keyword name of a =character-encoding=. Aliases are *not* recognized.
+- =(%register-mapping-part encoding slot-name fn)= (/internal/)
+
+  Registers =fn= as a factory in the =slot-name= of the =abstract-mapping= corresponding to the =encoding=.
+
+  Creates a new =abstract-mapping= if it doesn't exists yet.
+
+  =encoding= must be the keyword name of a =character-encoding=. Aliases are *not* recognized.
+
+  =slot=name= must be one of ='encoder-factory=, ='decoder-factory=, ='octet-counter-factory=, ='code-point-factory=.
+- =(define-encoder encoding (sg st ds dt) &body body)= (/macro/ /internal/)
+
+  Defines and registers the encoder =coder-factory= of the =encoding=.
+
+  The =coder-factory= will be a named lambda that can be referenced as =encoder=.
+
+  =encoding= must be the keyword name of a =character-encoding=. Aliases are *not* recognized.
+- =(define-decoder encoding (sg st ds dt) &body body)= (/macro/ /internal/)
+
+  Defines and registers the decoder =coder-factory= of the =encoding=.
+
+  The =coder-factory= will be a named lambda that can be referenced as =decoder=.
+
+  =encoding= must be the keyword name of a =character-encoding=. Aliases are *not* recognized.
+- =(define-octet-counter encoding (sg st) &body body)= (/macro/ /internal/)
+
+  Defines and registers the encoder =counter-factory= of the =encoding=.
+
+  The =counter-factory= will be a named lambda that can be referenced as =octet-counter-factory=.
+
+  =encoding= must be the keyword name of a =character-encoding=. Aliases are *not* recognized.
+- =(define-code-point-counter encoding (sg st) &body body)= (/macro/ /internal/)
+
+  Defines and registers the decoder =counter-factory= of the =encoding=.
+
+  The =counter-factory= will be a named lambda that can be referenced as =code-point-counter-factory=.
+
+  =encoding= must be the keyword name of a =character-encoding=. Aliases are *not* recognized.
+- =(instantiate-encoder encoding abstract-mapping sg st ds dt)= (/internal/)
+
+  Calls the encoder =coder-factory= of the =abstract-mapping=.
+
+  =encoding= is ignored.
+- =(instantiate-decoder encoding abstract-mapping sg st ds dt)= (/internal/)
+
+  Calls the decoder =coder-factory= of the given =abstract-mapping=.
+
+  =encoding= is ignored.
+- =(instantiate-code-point-counter encoding abstract-mapping sg st)= (/internal/)
+
+  Calls the encoder =counter-factory= of the given =abstract-mapping=.
+
+  =encoding= is ignored.
+- =(instantiate-octet-counter encoding abstract-mapping sg st)= (/internal/)
+
+  Calls the decoder =counter-factory= of the given =abstract-mapping=.
+
+  *Note:* If =enc-max-units-per-char= of the =encoding= is equal to =1=, calls the =make-fixed-width-counter=
+  factory instead, supplying the =enc-code-unit-size=.
+- =(instantiate-concrete-mappings &key)= (/macro/ /public:be/)
+
+  Expands into code generating the concrete-mappings hash-table. It maps encoding names and aliases to
+  concrete mappings.
+
+  Available =&key= arguments (*not evaluated!*):
+  - =:encodings=
+
+    Encodings to be instantiated. =(hash-table-keys *abstract-mappings*)= by default.
+  - =:optimize=
+
+    Optimization settings. =((speed 3) (debug 0) (compilation-speed 0))= by default.
+  - =:octet-seq-getter=, =:octet-seq-setter=, =:octet-seq-type=
+
+    Octet sequence type, getter and setter.
+  - =:code-point-seq-getter=, =:code-point-seq-setter=, =:code-point-seq-type=
+
+    Code-point sequence type, getter and setter.
+  - =:instantiate-decoders=
+
+    If =NIL=, do not instantiate the decoder factories. =T= by default.
+
+  For each encoding instantiates the abstract mapping's factories with the src/dest seq types & accessors to
+  generate the appropriate code for the concrete mappings. These functions are then saved in their respective
+  slots in the =concrete-mapping=. The =concrete-mapping= is then saved into the hash-table under both the
+  encoding name and aliases.
+
+  All encodings must have their abstract mappings available in the *compilation environment*.
+
+  /[ The following symbol are leaked into the =coder= and =counter= forms! ]/:
+  - =ht= denotes the hash-table being populated.
+  - =(notice-mapping encoding-name cm)= denotes the local function that registers =cm= in the =ht=.
+  - =cm= denotes the current =concrete-mapping= being instantiated.
+* Utilities for defining encodings
+- =+default-substitution-code-point+= (/constant/ =#x1a= /internal/)
+
+  Default ASCII substitution character code point used in case of an encoding/decoding error.
+- =ub8= (/internal/)
+
+  Alias type for =(unsigned-byte 8)=.
+- =code-point= (/internal/)
+
+  Alias type for =(mod #x110000)= (unicode code-points are strictly below =#x110000=).
+- =(define-unibyte-encoder encoding (code) &body body)= (/internal/)
+
+  Utility macro around =define-encoder= that takes care of most of the work needed to deal with an 8-bit,
+  fixed-width character encoding.
+
+  The =body= is enclosed by a =let= that binds =code= to the current code-point being encoded. It is also
+  enclosed by a =block= with =encoding= as a name that can be used to return early. The result should be the
+  octet corresponding to the current code-point. A local macro =handle-error= is also defined. If the current
+  code-point cannot be encoded, =handle-error= should be called. It will return a substitution character to be
+  used if the error is suppressed.
+
+  The encoder factory defined is named by =<encoding>-unibyte-encoder= interned in the current package.
+- =(define-unibyte-decoder encoding (octet) &body body)= (/internal/)
+
+  Utility macro around =define-decoder= that takes care of most of the work needed to deal with an 8-bit,
+  fixed-width character encoding.
+
+  The =body= is enclosed by a =let= that binds =octet= to the current octet being decoded. It is also enclosed
+  by a =block= with =encoding= as a name that can be used to return early. The result should be the code-point
+  corresponding to the current octet. A local macro =handle-error= is also defined. If the current octet
+  cannot be decoded, =handle-error= should be called. It will return a substitution octet to be used if the
+  error is suppressed.
+
+  The decoder factory defined is named by =<encoding>-unibyte-encoder= interned in the current package.
+  /[ should be -decoder ]/
+- =(handle-error &optional condition)= (/internal/)
+
+  A local macro defined by =define-unibyte-encoder= and =define-unibyte-decoder=.
+
+  Calls =encoding-error= or =decoder-error= with the current code-point or octet being converted, =encoding=,
+  the source buffer and the current position, =+default-substitution-code-point+=, and =condition=.
+  /[ encoding's substitution code should probably be used instead ]/
+
+  =condition= argument is evaluated, defaults to ='character-encoding-error= or ='character-decoding-error=.
+- =+repl+= (/constant/ =#xfffd= /internal/)
+
+  An utility constant for the unicode replacement character code point.
+
+  Defined in ~enc-unicode.lisp~, but is also used in ~enc-jpn.lisp~.
+- =f-ash=, =f-logior=, =f-logand=, =f-logxor= (/macro/ /internal/)
+
+  Convenience macros adding =(the fixnum ...)= declarations.
+
+  Defined in ~enc-unicode.lisp~, but is also used in ~enc-jpn.lisp~.
+* Error handling
+- Possible improvements:
+
+  Introduce restarts and/or a =*replacement-character*= variable to handle bad code-points / octets.
+
+  All of the following have problems for multi-byte encodings, since the size of the output needs to be known
+  in advance. Although if the replacement character is known in advance, in theory the octet-counter could
+  account for it. Allowing to specify /several/ replacement characters might also need some extra support code
+  outside of decoder/encoder.
+
+  - Offer a restart to use the default replacement character.
+  - Offer a restart to pick a replacement character.
+  - Introduce =*replacement-character*= to override encoding's default replacement character. The encoder
+    additionally needs to check that it is encodable.
+  - Encoding specific errors? (ASCII-specific / UTF8-specific / ...)
+
+- =*suppress-character-coding-errors*= (/public:be/)
+
+  If /true/, encoding or decoding errors are suppressed and the =+default-substitution-code-point+= is used.
+  /[ should use the current character encoding's default replacement character instead ! ]/
+
+  =NIL= by default.
+- =character-coding-error= (/condition/ /public/)
+
+  Superclass for all Babel errors conditions. A subclass of =cl:error=.
+  /This error hierarchy is based on SBCL's./
+
+  The following is the list of slot readers:
+  - =character-coding-error-encoding= (/public/) The current character encoding name.
+  - =character-coding-error-buffer= (/public/) The source buffer.
+  - =character-coding-error-position= (/public/) The current position in the source buffer.
+- =character-encoding-error= (/condition/ /public/)
+
+  Error condition that is signalled by the encoder. A subclass of =character-coding-error=.
+
+  The following is the list of slot readers:
+  - =character-encoding-error-code= (/public/) The code-point currently being encoded.
+- =(encoding-error code encoding buffer position &optional substitution condition)= (/internal/)
+
+  If =*suppress-character-coding-errors*= is /true/, returns =substitution=. Otherwise signals an error of
+  type =condition= initialized by =code=, =encoding=, =buffer= and =position=.
+
+  =substitution= is =+default-substitution-code-point+= by default.
+
+  =condition= is ='character-encoding-error= by default. Must by a subclass of =character-encoding-error=.
+- =character-decoding-error= (/condition/ /public/)
+
+  Error condition that is signalled by the decoder. A subclass of =character-coding-error=.
+
+  The following is the list of slot readers:
+  - =character-decoding-error-octets= (/public/) The vector of octets currently being decoded.
+- =(decoding-error octets encoding buffer position &optional substitution condition)= (/internal/)
+
+  If =*suppress-character-coding-errors*= is /true/, returns =substitution=. Otherwise signals an error of
+  type =error= initialized by =octets=, =encoding=, =buffer= and =position=.
+
+  =substitution= is =+default-substitution-code-point+= by default.
+
+  =condition= is ='character-decoding-error= by default. Must by a subclass of =character-decoding-error=.
+- =end-of-input-in-character= (/condition/ /public/)
+
+  Error condition that is signalled by the decoder or the code-point-counter of a multi-byte character
+  encoding. A subclass of =character-decoding-error=.
+- =character-out-of-range= (/condition/ /public/)
+
+  Error condition that is signalled by the decoder when the character being decoded is out of range. A
+  subclass of =character-decoding-error=.
+** UTF-8 specific errors
+- =invalid-utf8-starter-byte= (/condition/ /public/)
+
+  Error condition that is signalled when an invalid UTF-8 starter byte is found. A subclass of
+  =character-decoding-error=.
+- =invalid-utf8-continuation-byte= (/condition/ /public/)
+
+  Error condition that is signalled when an invalid UTF-8 continuation byte is found. A subclass of
+  =character-decoding-error=.
+- =overlong-utf8-sequence= (/condition/ /public/)
+
+  Error condition that is signalled when an overlong UTF-8 sequences is found. A subclass of
+  =character-decoding-error=.
+** GBK specific errors
+- =invalid-gbk-byte= (/condition/ /internal/)
+
+  Error condition that is signalled when an invalid GBK byte is found. A subclass of
+  =character-decoding-error=.
+- =invalid-gbk-character= (/condition/ /internal/)
+
+  Error condition that is signalled when an invalid GBK character is found. A subclass of
+  =character-encoding-error=.
+* External formats
+This interface is still somewhat sketchy. The rest of Babel doesn't really understand external formats.
+- =*default-eol-style*= (/public/)
+
+  The default end-of-line style. Depends on the OS the code is compiled on.
+
+  By default is =:crlf= on windows and =:lf= otherwise.
+- =eol-style= (/type/ /internal/)
+
+  Possible end-of-line styles. An alias for =(member :cr :lf :crlf)=.
+- =external-format= (/class/ /public/)
+
+  A combination of a Babel =character-encoding= and an =eol-style=.
+
+  The following is the list of slot readers:
+  - =external-format-encoding= (/public/) The encoding of the external format.
+  - =external-format-eol-style= (/public/) The end-of-line style of the external format.
+
+    =*default-eol-style*= by default.
+- =(make-external-format encoding &key eol-style)= (/public/)
+
+  Creates an external format.
+  - =encoding= can be a name or an alias for a character encoding, or a =character-encoding= object.
+  - =eol-style= must be one of =:cr=, =:lf=, =:crlf=. =*default-eol-style*= by default.
+- =(ensure-external-format external-format-designator)= (/public/)
+
+  Converts an =external-format-designator= into an external format. It can be one of the following:
+  - =external-format= object;
+  - =character-encoding= object;
+  - =symbol=, must be a name or an alias of a =character-encoding=;
+  - =list= containing one or three elements: a =character-encoding= designator optionally followed by a pair
+    of a =:eol-style= keyword followed by an =eol-style=.
+- =(external-format-equal ef1 ef2)= (/public/)
+
+  Compares two extenal format objects. Both the =character-encoding= and the =eol-style= are tested with =eq=.
+- =(lookup-mapping hash-table encoding)= (/public:be/)
+
+  Returns the =concrete-mapping= corresponding to the =encoding= from a hash-table generated by
+  =instantiate-concrete-mappings=.
+
+  =encoding= can be an encoding designator or an =external-format= object.
+
+  Additionally, if =encoding= is actually a =concrete-mapping= object, it is returned unchanged.
+* Strings
+- =8-bit-chars= (/feature/ /internal/)
+
+  Pushed to =*feautres*= if =char-code-limit= is =#x100=.
+- =ucs-2-chars= (/feature/ /internal/)
+
+  Pushed to =*feautres*= if =char-code-limit= is =#x10000=.
+- =(ub-[get/set] [value] vector index &optional (bytes 1) (endianness :ne))= (/macro/ /internal/)
+
+  Accesses elements of the byte vector as an unsigned multi-byte number with correct endianness.
+
+  =endianness= is one of the following:
+  - =:ne= for native endianness
+  - =:re= for reverse endianness
+  - =:be= for big endian
+  - =:le= for little endian
+
+  /[ ! =ub-set= should be wrapped into =once-only= ]/
+- =(string-[get/set] [code] string index)= (/macro/ /internal/)
+
+  Accesses an element of a string as a code-point.
+- =unicode-char-code-limit= (/constant/ =code-char-limit= /public/)
+
+  Alias for =cl:char-code-limit=. Can be lower than =#x110000=.
+- =unicode-char= (/type/ /public/)
+
+  This character type can hold any characters with code-points less than =unicode-char-code-limit=.
+
+  An alias for =lw:simple-char= on LispWorks, or =character= otherwise.
+  /[ ! =lw:simple-char= is now a synonym for =cl:character=, and is deprecated ]/
+
+- =simple-unicode-string= (/type/)
+
+  Alias for =(simple-array unicode-char (*))=.
+- =unicode-string= (/type/)
+
+  Alias for =(vector unicode-char *)=.
+- =*string-vector-mappings*= (/internal/)
+
+  The string-to-vector concrete mappings hash table, created by the =instantiate-concrete-mappings= macro.
+
+  Uses =ub-set=, =ub-get= and =(simple-array (unsigned-byte 8) (*))= for octets.
+
+  Uses =sting-set=, =string=get= and =simple-unicode-string= for code-points.
+- =*simple-base-string-vector-mappings*= (/#+sbcl/ /internal/)
+
+  The simple-base-string-to-vector concrete mappings hash table, created by =instantiate-concrete-mappings=.
+
+  Uses =ub-set= / =ub-get= / =(simple-array (unsigned-byte 8) (*))= for octets.
+
+  Uses =sting-set= / =string=get= / =simple-base-string= for code-points.
+- =(check-vector-bounds vector start end)= (/internal/)
+
+  Checks if =[start, end)= is a valid index range for =vector=.
+- =(with-simple-vector ((v vector) (s start) (e end)) &body body)= (/macro/ /public:be/)
+
+  Binds =v=, =s=, =e= to the underlying simple vector and updated index range if possible. On some
+  implementations =v= is a copy, so it must not be modified. The index range =[start, end)= is *not* checked.
+- =(with-checked-simple-vector ((v vector) (s start) (e end)) &body body)= (/macro/ /public:be/)
+
+  Binds =v=, =s=, =e= to the underlying simple vector and updated index range if possible. On some
+  implementations =v= is a copy, so it must not be modified. The index range =[start, end)= is checked to be a
+  valid index range. If =end= is =NIL= uses =(length vector)= instead.
+- =(bom-vector encoding use-bom)= (/internal/)
+
+  Returns the bom-encoding of the encoding if =use-bom= is =T=, or =:default= and =enc-use-bom= is /true/.
+- string/octets conversions
+  - =(octets-to-string vector &key)= (/public/)
+
+    Decodes a vector of octets into a string.
+
+    =vector= must have the element type of =(unsigned-byte 8)=.
+
+    /[ ! should allow for an arbitrary vector ]/
+  - =(string-to-octets string &key)= (/public/)
+
+    Encodes a string into a vector of octets.
+
+    Additional =&key= arguments:
+    - =(use-bom :default)= Controls if bom should be prepended to the resulting vector. Always prepend if =T=,
+      never prepend if =NIL=, use the value of =enc-use-bom= if =:default=.
+  - =(string-size-in-octets string &key)= (/public/)
+
+    Calculates the number of octets in the encoded string. Returns the new end of the string as a second
+    value.
+
+    Additional =&key= arguments:
+    - =max= Maximum number of octets to be produced. See =counter=.
+  - =(vector-size-in-chars vector &key)= (/public/)
+
+    Calculates the length of the decoded string. Returns the new end of the vector as a second value.
+
+    Additional =&key= arguments:
+    - =max= Maximum number of characters to be produced. See =counter=.
+
+  Common =&key= arguments:
+  - =(start 0)=, =end= Specifies the index range for the input string/vector.
+  - =encoding= Specifies the encoding. =*default-character-encoding*= by default.
+  - =errorp= Specifies if the errors should be signalled. =(not *suppress-character-coding-errors*)= by
+    default.
+- =(concatenate-strings-to-octets encoding &rest strings)= (/public/)
+
+  Optimized equivalent of:
+
+  : (string-to-octets (apply #'concatenate 'string strings) :encoding encoding)
+* Existing encodings
+|------------------------------+-----------------------+--------------------------------------+---------+-------------|
+| source file(s)               | name                  | aliases                              | unibyte | fixed-width |
+|------------------------------+-----------------------+--------------------------------------+---------+-------------|
+| enc-ascii.lisp               | :ascii                |                                      | T       | T           |
+|------------------------------+-----------------------+--------------------------------------+---------+-------------|
+| enc-ebcdic.lisp              | :ebcdic-us            | :ibm-037                             | T       | T           |
+|                              | :ebcdic-us-euro       | :ibm-1140                            | T       | T           |
+|                              | :ebcdic-fi            | :ibm-278                             | T       | T           |
+|                              | :ebcdic-fi-euro       | :ibm-1143                            | T       | T           |
+|------------------------------+-----------------------+--------------------------------------+---------+-------------|
+| enc-ebcdic-int.lisp          | :ebcdic-international |                                      | T       | T           |
+|------------------------------+-----------------------+--------------------------------------+---------+-------------|
+| enc-iso-8859.lisp            | :iso-8859-1           | :latin-1 :latin1                     | T       | T           |
+|                              | :iso-8859-2           | :latin-2 :latin2                     | T       | T           |
+|                              | :iso-8859-3           | :latin-3 :latin3                     | T       | T           |
+|                              | :iso-8859-4           | :latin-4 :latin4                     | T       | T           |
+|                              | :iso-8859-5           | :cyrillic                            | T       | T           |
+|                              | :iso-8859-6           | :arabic                              | T       | T           |
+|                              | :iso-8859-7           | :greek                               | T       | T           |
+|                              | :iso-8859-8           | :hebrew                              | T       | T           |
+|                              | :iso-8859-9           | :latin-5 :latin5                     | T       | T           |
+|                              | :iso-8859-10          | :latin-6 :latin6                     | T       | T           |
+|                              | :iso-8859-11          |                                      | T       | T           |
+|                              | :iso-8859-13          |                                      | T       | T           |
+|                              | :iso-8859-14          | :latin-8 :latin8                     | T       | T           |
+|                              | :iso-8859-15          | :latin-9 :latin9                     | T       | T           |
+|                              | :iso-8859-16          | :latin-10 :latin10                   | T       | T           |
+|------------------------------+-----------------------+--------------------------------------+---------+-------------|
+| enc-unicode.lisp             | :utf-8                |                                      | NIL     | NIL         |
+|                              | :utf-8b               |                                      | NIL     | NIL         |
+|                              | :utf-16               |                                      | NIL     | NIL         |
+|                              | :utf-16le             | :utf-16/le                           | NIL     | NIL         |
+|                              | :utf-16be             | :utf-16/be                           | NIL     | NIL         |
+|                              | :utf-32               | :ucs-4                               | NIL     | T           |
+|                              | :utf-32le             | :utf-32/le :ucs-4le :ucs-4/le        | NIL     | T           |
+|                              | :utf-32be             | :utf-32/be :ucs-4be :ucs-4/be        | NIL     | T           |
+|                              | :ucs-2                |                                      | NIL     | T           |
+|                              | :ucs-2le              | :ucs-2/le                            | NIL     | T           |
+|                              | :ucs-2be              | :ucs-2/be                            | NIL     | T           |
+|------------------------------+-----------------------+--------------------------------------+---------+-------------|
+| enc-cp437.lisp               | :cp437                | :oem-us :oem-437 :pc-8 :dos-latin-us | T       | T           |
+|------------------------------+-----------------------+--------------------------------------+---------+-------------|
+| enc-cp1251.lisp              | :cp1251               | :windows-1251                        | T       | T           |
+| enc-cp1252.lisp              | :cp1252               | :windows-1252                        | T       | T           |
+|------------------------------+-----------------------+--------------------------------------+---------+-------------|
+| enc-jpn.lisp, jpn-table.lisp | :eucjp                |                                      | NIL     | NIL         |
+|                              | :cp932                |                                      | NIL     | NIL         |
+|------------------------------+-----------------------+--------------------------------------+---------+-------------|
+| enc-gbk.lisp, gbk-map.lisp   | :gbk                  |                                      | NIL     | NIL         |
+|------------------------------+-----------------------+--------------------------------------+---------+-------------|
+| enc-koi8.lisp                | :koi8-ru              |                                      | T       | T           |
+|                              | :koi8-r               |                                      | T       | T           |
+|                              | :koi8-u               |                                      | T       | T           |
+|------------------------------+-----------------------+--------------------------------------+---------+-------------|
+* #\ reader-macro
+Extends the #\ syntax to support unicode code-points with the #\uXXX syntax, where XXX is the unicode
+code-point in hexadecimal.
+- =(sharp-backslash-reader original-reader stream char num)= (/internal/)
+
+  The underlying function, requires the original #\ reader-macro to be passed as its first argument
+  =original-reader=.
+- =(make-sharp-backslash-reader)= (/internal/)
+
+  Wraps the =sharp-backslash-reader= in a lambda that captures the current #\ reader-macro. The result can be
+  then used with =set-dispatch-macro-character=.
+- =(enable-sharp-backslash-syntax)= (/macro/ /public/)
+
+  Enables the #\uXXX syntax at compile- and execute-time only. Also copies the current readtable, unlike the
+  underlying =set-sharp-backslash-syntax-in-readtable=.
+- =(set-sharp-backslash-syntax-in-readtable)= (/public/)
+
+  Enables the #\uXXX syntax in the current readtable.
+* Streams
+Status:
+- in-memory output streams support binary/bivalent/character element-types and file-position
+Possible improvements/TODO:
+- filter-stream types/mixins that can wrap a binary stream and turn it into a bivalent/character stream
+- in-memory input streams with file-position similar to in-memory output streams
+- in-memory input/output streams?
+
+- =(vector-extend extension vector &key (start 0) end)= (/internal/)
+
+  Extends the =vector= with the subsequence of =extension= denoted by =start= and =end=.
+- =in-memory-stream= (/class/ /public:bs/)
+
+  A binary stream that reads octets from or writes octets to a sequence in RAM. A subclass of
+  =tgs:trivial-gray-stream-mixin=. /[ apparently, this class is deprecated in tgs ? ]/
+
+  The following is the list of slot accessors:
+  - =element-type-of= (/internal/) By default =:default=, which means bivalent.
+
+    A =cl:stream-element-type= method is defined to return =(element-type-of stream)= on an =in-memory-stream=.
+  - =external-format-of= (/internal/) By default =*default-character-encoding*=, =*default-eol-style*=.
+  - =in-memory-stream-open-p= (/#+cmu/ /internal/) Have(?) to keep track of this manually on CMUCL.
+
+    =cl:open-stream-p= and =cl:close= methods are defined in terms of this slot.
+- =(stream-accepts-octets? stream)= (/internal/)
+
+  Returns =T= if =element-type= is =:default= or a subtype of =(unsigned-byte 8)=. Used by
+  =check-if-accepts-octets= and =tgs:stream-write-sequence=.
+- =(stream-accpets-characters? stream)= (/internal/)
+
+  Returns =T= if =element-type= is =:default=, or =character= or =base-char=. Used by
+  =check-if-accepts-characters= and =tgs:stream-write-sequence=.
+- =in-memory-input-stream= (/class/ /internal/)
+
+  A binary stream that reads octets from a sequence in RAM. A subclass of =in-memory-stream=,
+  =tgs:fundamental-binary-input-stream=.
+
+  On /#+cmu/, an =output-stream-p= method is defined to return =NIL= for =in-memory-input-stream=.
+- =in-memory-output-stream= (/class/ /internal/)
+
+  A binary stream that writes octets to a sequence in RAM. A subclass of =in-memory-stream=,
+  =tgs:fundamental-binary-output-stream=.
+
+  On /#+cmu/, an =input-stream-p= method is defined to return =NIL= for =in-memory-input-stream=.
+- =(make-in-memory-output-stream &key)= (/public:bs/)
+
+  Returns a binary output stream.
+
+  Creates an instance of =vector-output-stream=, using a vector created by =make-vector-stream-buffer= as an
+  underlying buffer.
+
+  Available =&key= arguments:
+  - =element-type= must be =:default= or =:bivalent=, =character= or a subtype of =(unsigned-byte 8)=.
+  - =external-format= must be an external-format designator.
+  - =initial-buffer-size= is the initial size of the underlying vector. =32= by default.
+- =(make-in-memory-input-stream data &key)= (/public:bs/)
+
+  Returns a binary input stream that provides elements of =data=.
+
+  Creates an instance of =vector-input-stream=, using =data= as an underlying buffer.
+
+  Available =&key= arguments:
+  - =element-type= must be =:default= or =:bivalent=, =character= or a subtype of =(unsigned-byte 8)=.
+  - =external-format= must be an external-format designator.
+- =vector-stream= (/class/ /internal/)
+
+  A mixin for =in-memory-= streams where the underlying sequence is a vector.
+
+  The following is the list of slot accessors:
+  - =vector-stream-vector= (/internal/)
+
+    The underlying vector of the stream. For output streams must always be adjustable and have a fill-pointer.
+  - =vector-stream-index= (/internal/)
+
+    An index into the underlying vector. Denotes the current position.
+- =vector-input-stream= (/class/ /public:bs/)
+
+  A binary input stream where the underlying sequence is a vector. A subclass of =vector-stream=,
+  =in-memory-input-stream=.
+
+  The following is the list of slot accessors:
+  - =vector-stream-end= (/internal/)
+
+    An index into the underlying vector. Denotes the end of the available data.
+- =vector-output-stream= (/class/ /public:bs/)
+
+  A binary output stream where the underlying sequence is a vector. A subclass of =vector-stream=, =in-memory-output-stream=.
+- =in-memory-stream-error= (/condition/ /internal/)
+
+  Superclass for all errors related to =in-memory-= streams. A subclass of =cl:stream-error=.
+- =in-memory-stream-closed-error= (/condition/ /internal/)
+
+  Error condition that is signalled when trying to read from or write to a closed =in-memory-stream=. A
+  subclass of =in-memory-stream-error=.
+- =wrong-element-type-stream-error= (/condition/ /internal/)
+
+  Error condition that is signalled when trying to read from or write to an =in-memory-stream= that has a
+  wrong element type. A subclass of =cl:stream-error=.
+  /[ ! should be a subclass of =in-memory-stream-error= ]/
+
+  The following is the list of slot accessors:
+  - =expected-type-of= (/internal/) The expected element type of the stream.
+- =(wrong-element-type-stream-error stream expected-type)= (/internal/)
+
+  Signals a =wrong-element-type-stream-error= for the given =stream= and =expected-type=.
+- =(check-if-open stream)= (/internal/)
+
+  Checks if =stream= is open and signals an error otherwise.
+- =(check-if-accepts-octets stream)= (/internal/)
+
+  Checks if =stream= accepts octets and signals an error otherwise.
+- =(check-if-accepts-characters stream)= (/internal/)
+
+  Checks if =stream= accepts characters and signals an error otherwise.
+- =tgs:stream-read-byte= for =vector-input-stream=
+
+  Returns =:eof= when beyond the =vector-stream-end= pointer.
+- =tgs:stream-read-char= for =vector-input-stream= (/TODO/)
+
+  Not implemented.
+- =tgs:stream-listen= for =vector-input-stream=
+
+  Checks whether =vector-stream-index= is beyond =vector-stream-end=.
+- =tgs:stream-read-sequence= for =vector-input-stream=
+
+  Simply copies bytes over, does not use the external-format.
+
+  /TODO/: check for sequence type, element-type, use the external-format.
+- =tgs:stream-write-byte= for =vector-output-stream=
+
+  Writes a byte to the underlying vector, extending it if needed.
+- =extend-vector-output-stream-buffer= (/internal/)
+
+  Calls =vector-extend= on the underlying vector of the =vector-stream=, keeping track of the stream index.
+- =tgs:stream-write-char= for =vector-output-stream=
+
+  Simply writes a character if the =element-type-of= is ='character=, otherwise encodes the character with
+  =string-to-octets= and calls =extend-vector-output-stream-buffer= on the result.
+- =tgs:stream-write-sequence= for =vector-output-stream=
+
+  If the sequence is a string, encodes it with =string-to-octets=. Calls =extend-vector-output-stream-buffer=
+  either on the result or the initial sequence if it was a vector of octets.
+- =tgs:stream-write-string= for =vector-output-stream=
+
+  Simply calls the =tgs:stream-write-sequence= method.
+- =tgs:stream-line-column= for =vector-output-stream=
+
+  A dummy method that always returns =NIL=.
+- =tgs:stream-file-position= for =vector-stream=
+
+  Returns the index into the underlying vector.
+- =(make-vector-stream-buffer &key)= (/internal/)
+
+  Creates an adjustable array with a fill pointer that can be used by the =vector-output-stream=.
+
+  Available =&key= arguments:
+  - =element-type= The element type of the vector. =(unsigned-byte 8)= by default.
+  - =initial-size= The initial size of the vector. =32= by default.
+- =(get-output-stream-sequence stream &key)= (/generic/ /public:bs/)
+
+  See below (only has a single method).
+- =get-output-stream-sequence= for =in-memory-output-stream= (/method/ /public:bs/)
+
+  Returns a sequence containing all the octets that have been written to the
+  =in-memory-output-stream=. Clears those octets from the stream.
+
+  Available =&key= arguments:
+  - =return-as=
+
+    The type of the sequence to be returned. Can be one of =vector=, =string= or =list=. When equal to
+    =string=, converts the octets to a string via =octets-to-string=.
+- =(with-output-to-sequence (var &key) &body body)= (/public:bs/)
+
+  Creates an =in-memory-output-stream= and binds =var= to it. Returns the result of calling
+  =get-output-stream-sequence= on this stream. The stream is closed automatically on exit.
+
+  Available =&key= arguments
+  - =return-as= Same as in =get-output-stream-sequence=.
+  - =element-type=, =external-format=, =initial-buffer-size= Same as in =make-in-memory-output-stream=.
+- =(with-input-from-sequence (var data &key) &body body)= (/public:bs/)
+
+  Creates an =in-memory-input-stream= and binds =var= to it. The stream is closed automatically on exit.
+
+  Available =&key= arguments
+  - =element-type=, =external-format= Same as in =make-in-memory-input-stream=.
