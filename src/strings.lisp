@@ -220,10 +220,13 @@ shouldn't attempt to modify V."
 
 (defun octets-to-string (vector &key (start 0) end
                          (errorp (not *suppress-character-coding-errors*))
-                         (encoding *default-character-encoding*))
+                         (encoding *default-character-encoding*)
+                         (null-terminated nil))
   (check-type vector (vector (unsigned-byte 8)))
   (with-checked-simple-vector ((vector vector) (start start) (end end))
     (declare (type (simple-array (unsigned-byte 8) (*)) vector))
+    (when (and null-terminated (> end start))
+      (decf end))
     (let ((*suppress-character-coding-errors* (not errorp))
           (mapping (lookup-mapping *string-vector-mappings* encoding)))
       (multiple-value-bind (size new-end)
@@ -250,7 +253,8 @@ shouldn't attempt to modify V."
 
 (defun string-to-octets (string &key (encoding *default-character-encoding*)
                          (start 0) end (use-bom :default)
-                         (errorp (not *suppress-character-coding-errors*)))
+                         (errorp (not *suppress-character-coding-errors*))
+                         (null-terminated nil))
   (declare (optimize (speed 3) (safety 2)))
   (let ((*suppress-character-coding-errors* (not errorp)))
     (etypecase string
@@ -272,8 +276,10 @@ shouldn't attempt to modify V."
                        (+ (the array-index
                             (funcall (the function (octet-counter mapping))
                                      string start end -1))
-                          bom-length)
-                       :element-type '(unsigned-byte 8))))
+                          bom-length
+                          (if null-terminated 1 0))
+                       :element-type '(unsigned-byte 8)
+                       :initial-element 0)))
          (replace result bom)
          (funcall (the function (encoder mapping))
                   string start end result bom-length)
@@ -293,8 +299,10 @@ shouldn't attempt to modify V."
                          (+ (the array-index
                               (funcall (the function (octet-counter mapping))
                                        string start end -1))
-                            bom-length)
-                         :element-type '(unsigned-byte 8))))
+                            bom-length
+                            (if null-terminated 1 0))
+                         :element-type '(unsigned-byte 8)
+                         :initial-element 0)))
            (replace result bom)
            (funcall (the function (encoder mapping))
                     string start end result bom-length)
