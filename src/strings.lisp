@@ -216,7 +216,13 @@ shouldn't attempt to modify V."
 
 (declaim (inline octets-to-string string-to-octets string-size-in-octets
                  vector-size-in-chars concatenate-strings-to-octets
-                 bom-vector))
+                 bom-vector nul-vector))
+
+(defun nul-vector (encoding)
+  (enc-nul-encoding
+   (typecase encoding
+     (external-format (external-format-encoding encoding))
+     (t (get-character-encoding encoding)))))
 
 (defun octets-to-string (vector &key (start 0) end
                          (errorp (not *suppress-character-coding-errors*))
@@ -225,8 +231,10 @@ shouldn't attempt to modify V."
   (check-type vector (vector (unsigned-byte 8)))
   (with-checked-simple-vector ((vector vector) (start start) (end end))
     (declare (type (simple-array (unsigned-byte 8) (*)) vector))
-    (when (and null-terminated (> end start))
-      (decf end))
+    (when null-terminated
+      (let* ((nul-position (search (nul-vector encoding) vector :start2 start :end2 end)))
+        (when nul-position
+          (setf end nul-position))))
     (let ((*suppress-character-coding-errors* (not errorp))
           (mapping (lookup-mapping *string-vector-mappings* encoding)))
       (multiple-value-bind (size new-end)
@@ -270,6 +278,8 @@ shouldn't attempt to modify V."
                                        encoding))
               (bom (bom-vector encoding use-bom))
               (bom-length (length bom))
+              (nul (and null-terminated (nul-vector encoding)))
+              (nul-length (if nul (length nul) 0))
               ;; OPTIMIZE: we could use the (length string) information here
               ;; because it's a simple-base-string where each character <= 127
               (result (make-array
@@ -277,10 +287,10 @@ shouldn't attempt to modify V."
                             (funcall (the function (octet-counter mapping))
                                      string start end -1))
                           bom-length
-                          (if null-terminated 1 0))
-                       :element-type '(unsigned-byte 8)
-                       :initial-element 0)))
+                          nul-length)
+                       :element-type '(unsigned-byte 8))))
          (replace result bom)
+         (when nul (replace result nul :start1 (- (length result) nul-length)))
          (funcall (the function (encoder mapping))
                   string start end result bom-length)
          result))
@@ -295,15 +305,17 @@ shouldn't attempt to modify V."
          (let* ((mapping (lookup-mapping *string-vector-mappings* encoding))
                 (bom (bom-vector encoding use-bom))
                 (bom-length (length bom))
+                (nul (and null-terminated (nul-vector encoding)))
+                (nul-length (if nul (length nul) 0))
                 (result (make-array
                          (+ (the array-index
                               (funcall (the function (octet-counter mapping))
                                        string start end -1))
                             bom-length
-                            (if null-terminated 1 0))
-                         :element-type '(unsigned-byte 8)
-                         :initial-element 0)))
+                            nul-length)
+                         :element-type '(unsigned-byte 8))))
            (replace result bom)
+           (when nul (replace result nul :start1 (- (length result) nul-length)))
            (funcall (the function (encoder mapping))
                     string start end result bom-length)
            result))))))
