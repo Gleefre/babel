@@ -907,7 +907,8 @@ the four-byte format of the standard UTF-8."
   :literal-char-code-limit #x80
   :bom-encoding #(#xef #xbb #xbf)
   :default-replacement nil ; #xfffd ??
-  :nul-encoding #(#xc0 #x80))
+  :nul-encoding #(#xc0 #x80)
+  :codespace '((0 #x10ffff)))
 
 (define-octet-counter :modified-utf-8 (getter type)
   `(named-lambda modified-utf-8-octet-counter (seq start end max)
