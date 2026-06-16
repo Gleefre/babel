@@ -29,6 +29,17 @@
   - =enc-max-units-per-char= (/public:be/)
 
     Maximum amount of code units for a single character.
+  - =enc-codespace= (/public:be/)
+
+    Denotes the Unicode code points that are encodable in this encoding. Used by =encodable-code-point-p=.
+
+    This must be a list of range designators in increasing order. Possible designators are:
+    - An =integer=: one codepoint that is encodable.
+    - A list =(start end &optional table)=: All codepoints in the range (bounds included) are
+      encodable, unless =table= is present, in that case the corresponding entry in the array will
+      be used to determine if the codepoint is encodable.
+    - A =hash-table=: Must be last in the list of ranges, the corresponding entry in the hash table
+      will be used to determine if the codepoint is encodable for all codepoints.
   - =enc-native-endianness= (/public:be/)
 
     For 16- and 32-bit units. If =NIL=, it is necessary to swap bytes.
@@ -525,6 +536,22 @@ This interface is still somewhat sketchy. The rest of Babel doesn't really under
 - =(bom-vector encoding use-bom)= (/internal/)
 
   Returns the bom-encoding of the encoding if =use-bom= is =T=, or =:default= and =enc-use-bom= is /true/.
+- =(encodable-code-point-p character encoding)= (/public:be/)
+
+  Checks if the code point is encodable in the given encoding.
+- =(encodable-character-p character &key encoding)= (/public/)
+
+  Checks if the character is encodable in the given encoding.
+  Uses the =*default-character-encoding*= by default.
+- =(encodable-string-p string &key encoding)= (/public/)
+
+  Checks if the string is encodable in the given encoding.
+  If unencodable, returns the position of the first unencodable character as a second value.
+
+  Uses the =*default-character-encoding*= by default.
+
+  Additional =&key= arguments:
+  - =(start 0)=, =end= Specifies the index range for the input string.
 - string/octets conversions
   - =(octets-to-string vector &key)= (/public/)
 
