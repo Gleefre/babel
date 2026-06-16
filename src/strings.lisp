@@ -348,7 +348,8 @@ shouldn't attempt to modify V."
 
 (defun string-size-in-octets (string &key (start 0) end (max -1 maxp)
                               (errorp (not *suppress-character-coding-errors*))
-                              (encoding *default-character-encoding*))
+                              (encoding *default-character-encoding*)
+                              (null-terminated nil))
   (check-type string string)
   (with-checked-simple-vector ((string (coerce string 'unicode-string))
                                (start start) (end end))
@@ -356,17 +357,29 @@ shouldn't attempt to modify V."
     (let ((mapping (lookup-mapping *string-vector-mappings* encoding))
           (*suppress-character-coding-errors* (not errorp)))
       (when maxp (assert (plusp max)))
-      (funcall (octet-counter mapping) string start end max))))
+      (if null-terminated
+          (let ((nul-length (length (nul-vector encoding))))
+            (if (and maxp (<= max nul-length))
+                (values nul-length end)
+                (multiple-value-bind (length new-end)
+                    (funcall (octet-counter mapping) string start end (- max nul-length))
+                  (values (+ length nul-length) new-end))))
+          (funcall (octet-counter mapping) string start end max)))))
 
 (defun vector-size-in-chars (vector &key (start 0) end (max -1 maxp)
                              (errorp (not *suppress-character-coding-errors*))
-                             (encoding *default-character-encoding*))
+                             (encoding *default-character-encoding*)
+                             (null-terminated nil))
   (check-type vector (vector (unsigned-byte 8)))
   (with-checked-simple-vector ((vector vector) (start start) (end end))
     (declare (type (simple-array (unsigned-byte 8) (*)) vector))
     (let ((mapping (lookup-mapping *string-vector-mappings* encoding))
           (*suppress-character-coding-errors* (not errorp)))
       (when maxp (assert (plusp max)))
+      (when null-terminated
+        (let* ((nul-position (search (nul-vector encoding) vector :start2 start :end2 end)))
+          (when nul-position
+            (setf end nul-position))))
       (funcall (code-point-counter mapping) vector start end max))))
 
 (defun encodable-string-p (string &key (encoding *default-character-encoding*)
